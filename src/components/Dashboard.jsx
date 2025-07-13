@@ -1,177 +1,356 @@
-// src/components/Dashboard.jsx
-
-import React, { useState } from "react";
-import { DateRange } from "react-date-range";
-import "react-date-range/dist/styles.css";
-import "react-date-range/dist/theme/default.css";
-import * as XLSX from "xlsx";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, PieChart, Pie, Cell } from "recharts";
-
-// --- Use ر.س as the currency symbol for all amounts ---
-
-const statCards = [
-  { label: "Total Receivables", value: "ر.س 12,000" },
-  { label: "Received Amount", value: "ر.س 9,000" },
-  { label: "Outstanding Receivables", value: "ر.س 3,000" },
-  { label: "Total Payables", value: "ر.س 5,000" },
-  { label: "Paid Amount", value: "ر.س 4,500" },
-  { label: "Outstanding Payables", value: "ر.س 500" },
-];
-
-const collectionData = [
-  { date: "Jun 01", amount: 1500 },
-  { date: "Jun 05", amount: 2000 },
-  { date: "Jun 10", amount: 1700 },
-  { date: "Jun 20", amount: 3800 },
-];
-
-const paymentStatusData = [
-  { name: "Paid", value: 9000 },
-  { name: "Unpaid", value: 3000 },
-];
-
-const unpaidClients = [
-  { name: "John Doe", unit: "A101", amount: "ر.س 1,200", due: "2025-07-10", phone: "055-1234567", status: "Overdue" },
-  { name: "Fatima Ali", unit: "B305", amount: "ر.س 900", due: "2025-07-12", phone: "055-9988776", status: "Due Soon" },
-];
-
-const COLORS = ["#00C49F", "#FF8042"];
-
-function exportDashboardToExcel() {
-  // Prepare data
-  const stats = statCards.map((stat) => ({
-    Metric: stat.label,
-    Value: stat.value,
-  }));
-
-  const unpaid = unpaidClients.map((c) => ({
-    Name: c.name,
-    Unit: c.unit,
-    Amount: c.amount,
-    "Due Date": c.due,
-    Status: c.status,
-    Phone: c.phone,
-  }));
-
-  // Build workbook
-  const wb = XLSX.utils.book_new();
-  const statsSheet = XLSX.utils.json_to_sheet(stats);
-  const unpaidSheet = XLSX.utils.json_to_sheet(unpaid);
-
-  XLSX.utils.book_append_sheet(wb, statsSheet, "Summary");
-  XLSX.utils.book_append_sheet(wb, unpaidSheet, "Unpaid Clients");
-
-  XLSX.writeFile(wb, `RealEstate-Dashboard-${Date.now()}.xlsx`);
-}
+import React, { useState, useEffect } from "react";
+import { supabase } from "../supabaseClient";
 
 export default function Dashboard() {
-  const [range, setRange] = useState([
-    {
-      startDate: new Date(),
-      endDate: new Date(),
-      key: "selection",
-    },
-  ]);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [stats, setStats] = useState({
+    lease: { due: 0, paid: 0, outstanding: 0 },
+    rent: { due: 0, paid: 0, outstanding: 0 }
+  });
+  const [currentMonthStats, setCurrentMonthStats] = useState({
+    lease: { due: 0, paid: 0, outstanding: 0 },
+    rent: { due: 0, paid: 0, outstanding: 0 }
+  });
+  const [detailModal, setDetailModal] = useState({
+    open: false, title: "", records: [], type: "",
+    contractMap: {}, clientNames: {}, propertyNames: {}, unitNames: {}
+  });
 
+  const isValid = from && to && new Date(from) <= new Date(to);
+
+  // Get current month first/last day
+  const now = new Date();
+  const currentMonth = now.getMonth() + 1;
+  const currentYear = now.getFullYear();
+  const firstDay = `${currentYear}-${String(currentMonth).padStart(2, '0')}-01`;
+  // Next month first day:
+  const lastDay = `${currentMonth === 12 ? currentYear + 1 : currentYear}-${String(currentMonth === 12 ? 1 : currentMonth + 1).padStart(2, '0')}-01`;
+
+  // Fetch date-range stats
+  useEffect(() => {
+    if (!isValid) return;
+    async function fetchStats() {
+      let { data: lease_payments } = await supabase
+        .from("lease_payments").select("*").gte("due_date", from).lte("due_date", to);
+
+      let lease_due = 0, lease_paid = 0, lease_outstanding = 0;
+      if (lease_payments) {
+        lease_due = lease_payments.reduce((sum, p) => sum + Number(p.amount_due || 0), 0);
+        lease_paid = lease_payments.reduce((sum, p) => sum + Number(p.amount_paid || 0), 0);
+        lease_outstanding = lease_payments.reduce(
+          (sum, p) => sum + (Number(p.amount_due || 0) - Number(p.amount_paid || 0)), 0
+        );
+      }
+
+      let { data: rent_receivables } = await supabase
+        .from("rent_receivables").select("*").gte("due_date", from).lte("due_date", to);
+
+      let rent_due = 0, rent_paid = 0, rent_outstanding = 0;
+      if (rent_receivables) {
+        rent_due = rent_receivables.reduce((sum, p) => sum + Number(p.amount_due || 0), 0);
+        rent_paid = rent_receivables.reduce((sum, p) => sum + Number(p.amount_paid || 0), 0);
+        rent_outstanding = rent_receivables.reduce(
+          (sum, p) => sum + (Number(p.amount_due || 0) - Number(p.amount_paid || 0)), 0
+        );
+      }
+
+      setStats({
+        lease: { due: lease_due, paid: lease_paid, outstanding: lease_outstanding },
+        rent: { due: rent_due, paid: rent_paid, outstanding: rent_outstanding }
+      });
+    }
+    fetchStats();
+  }, [from, to, isValid]);
+
+  // Fetch current month stats
+  useEffect(() => {
+    async function fetchMonthStats() {
+      let { data: lease_payments } = await supabase
+        .from("lease_payments").select("*").gte("due_date", firstDay).lt("due_date", lastDay);
+
+      let lease_due = 0, lease_paid = 0, lease_outstanding = 0;
+      if (lease_payments) {
+        lease_due = lease_payments.reduce((sum, p) => sum + Number(p.amount_due || 0), 0);
+        lease_paid = lease_payments.reduce((sum, p) => sum + Number(p.amount_paid || 0), 0);
+        lease_outstanding = lease_payments.reduce(
+          (sum, p) => sum + (Number(p.amount_due || 0) - Number(p.amount_paid || 0)), 0
+        );
+      }
+
+      let { data: rent_receivables } = await supabase
+        .from("rent_receivables").select("*").gte("due_date", firstDay).lt("due_date", lastDay);
+
+      let rent_due = 0, rent_paid = 0, rent_outstanding = 0;
+      if (rent_receivables) {
+        rent_due = rent_receivables.reduce((sum, p) => sum + Number(p.amount_due || 0), 0);
+        rent_paid = rent_receivables.reduce((sum, p) => sum + Number(p.amount_paid || 0), 0);
+        rent_outstanding = rent_receivables.reduce(
+          (sum, p) => sum + (Number(p.amount_due || 0) - Number(p.amount_paid || 0)), 0
+        );
+      }
+
+      setCurrentMonthStats({
+        lease: { due: lease_due, paid: lease_paid, outstanding: lease_outstanding },
+        rent: { due: rent_due, paid: rent_paid, outstanding: rent_outstanding }
+      });
+    }
+    fetchMonthStats();
+  }, [firstDay, lastDay]);
+  // --- Stat Cards Array ---
+  const statCards = [
+    { label: "Total Lease Payable", value: `ر.س ${stats.lease.due.toLocaleString()}`, type: "lease_due" },
+    { label: "Lease Paid Amount", value: `ر.س ${stats.lease.paid.toLocaleString()}`, type: "lease_paid" },
+    { label: "Outstanding Lease Payables", value: `ر.س ${stats.lease.outstanding.toLocaleString()}`, highlight: true, type: "lease_outstanding" },
+    { label: "Total Rent Receivables", value: `ر.س ${stats.rent.due.toLocaleString()}`, type: "rent_due" },
+    { label: "Rent Received Amount", value: `ر.س ${stats.rent.paid.toLocaleString()}`, type: "rent_paid" },
+    { label: "Outstanding Rent Receivables", value: `ر.س ${stats.rent.outstanding.toLocaleString()}`, highlight: true, type: "rent_outstanding" }
+  ];
+
+  // --- Current Month Card Array ---
+  const monthCards = [
+    { label: "Lease Payable (This Month)", value: `ر.س ${currentMonthStats.lease.due.toLocaleString()}`, type: "lease_due_month" },
+    { label: "Lease Paid (This Month)", value: `ر.س ${currentMonthStats.lease.paid.toLocaleString()}`, type: "lease_paid_month" },
+    { label: "Outstanding Lease Payables (This Month)", value: `ر.س ${currentMonthStats.lease.outstanding.toLocaleString()}`, highlight: true, type: "lease_outstanding_month" },
+    { label: "Rent Receivables (This Month)", value: `ر.س ${currentMonthStats.rent.due.toLocaleString()}`, type: "rent_due_month" },
+    { label: "Rent Received (This Month)", value: `ر.س ${currentMonthStats.rent.paid.toLocaleString()}`, type: "rent_paid_month" },
+    { label: "Outstanding Rent Receivables (This Month)", value: `ر.س ${currentMonthStats.rent.outstanding.toLocaleString()}`, highlight: true, type: "rent_outstanding_month" }
+  ];
+
+  // --- Card Click Handler (Works for All Cards) ---
+  async function handleCardClick(type) {
+    let records = [];
+    let title = "";
+    let table = "";
+    let contractMap = {};
+    let clientNames = {}, propertyNames = {}, unitNames = {};
+    let fromDate, toDate;
+
+    if (type.endsWith("_month")) {
+      fromDate = firstDay;
+      toDate = lastDay;
+    } else {
+      fromDate = from;
+      toDate = to;
+    }
+
+    if (type.startsWith("lease")) {
+      table = "lease_payments";
+      let { data } = await supabase.from(table).select("*").gte("due_date", fromDate).lt("due_date", toDate);
+      if (type === "lease_due" || type === "lease_due_month") {
+        records = data || [];
+        title = type.endsWith("_month") ? "All Lease Payables (This Month)" : "All Lease Payables";
+      } else if (type === "lease_paid" || type === "lease_paid_month") {
+        records = (data || []).filter(r => Number(r.amount_paid || 0) > 0);
+        title = type.endsWith("_month") ? "Lease Payments Received (This Month)" : "Lease Payments Received";
+      } else if (type === "lease_outstanding" || type === "lease_outstanding_month") {
+        records = (data || []).filter(r => Number(r.amount_due || 0) > Number(r.amount_paid || 0));
+        title = type.endsWith("_month") ? "Outstanding Lease Payables (This Month)" : "Outstanding Lease Payables";
+      }
+      var propertyIds = [...new Set(records.map(r => r.property_id).filter(Boolean))];
+      if (propertyIds.length) {
+        let { data: props } = await supabase.from("properties").select("id, property_name").in("id", propertyIds);
+        if (props) props.forEach(p => { propertyNames[p.id] = p.property_name; });
+      }
+    } else if (type.startsWith("rent")) {
+      table = "rent_receivables";
+      let { data } = await supabase.from(table).select("*").gte("due_date", fromDate).lt("due_date", toDate);
+      if (type === "rent_due" || type === "rent_due_month") {
+        records = data || [];
+        title = type.endsWith("_month") ? "All Rent Receivables (This Month)" : "All Rent Receivables";
+      } else if (type === "rent_paid" || type === "rent_paid_month") {
+        records = (data || []).filter(r => Number(r.amount_paid || 0) > 0);
+        title = type.endsWith("_month") ? "Rent Payments Received (This Month)" : "Rent Payments Received";
+      } else if (type === "rent_outstanding" || type === "rent_outstanding_month") {
+        records = (data || []).filter(r => Number(r.amount_due || 0) > Number(r.amount_paid || 0));
+        title = type.endsWith("_month") ? "Outstanding Rent Receivables (This Month)" : "Outstanding Rent Receivables";
+      }
+      const contractIds = [...new Set(records.map(r => r.contract_id).filter(Boolean))];
+      let contracts = [];
+      if (contractIds.length) {
+        let { data: ctrs } = await supabase.from("contracts")
+          .select("id, client_id, property_id, unit_id")
+          .in("id", contractIds);
+        contracts = ctrs || [];
+      }
+      contractMap = {};
+      contracts.forEach(c => { contractMap[c.id] = c; });
+      var clientIds = [...new Set(contracts.map(c => c.client_id).filter(Boolean))];
+      var propertyIds = [...new Set(contracts.map(c => c.property_id).filter(Boolean))];
+      var unitIds = [...new Set(contracts.map(c => c.unit_id).filter(Boolean))];
+      if (clientIds.length) {
+        let { data: clients } = await supabase.from("clients").select("id, client_name").in("id", clientIds);
+        if (clients) clients.forEach(c => { clientNames[c.id] = c.client_name; });
+      }
+      if (propertyIds.length) {
+        let { data: props } = await supabase.from("properties").select("id, property_name").in("id", propertyIds);
+        if (props) props.forEach(p => { propertyNames[p.id] = p.property_name; });
+      }
+      if (unitIds.length) {
+        let { data: units } = await supabase.from("units").select("id, unit_name").in("id", unitIds);
+        if (units) units.forEach(u => { unitNames[u.id] = u.unit_name; });
+      }
+    }
+
+    setDetailModal({
+      open: true,
+      title,
+      records,
+      type,
+      contractMap,
+      clientNames,
+      propertyNames,
+      unitNames
+    });
+  }
+
+  // --- Start Render ---
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-700 p-8">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-4xl font-extrabold neon-glow mb-2 tracking-wider">
-  Real Estate Dashboard
-</h1>
-
-        <button
-          onClick={exportDashboardToExcel}
-          className="px-4 py-2 bg-blue-600 text-white rounded-xl shadow-lg hover:bg-blue-800 transition font-semibold"
-        >
-          Export as Excel
-        </button>
-      </div>
-
-      <div className="mb-8">
-        <DateRange
-          editableDateInputs={true}
-          onChange={item => setRange([item.selection])}
-          moveRangeOnFirstSelection={false}
-          ranges={range}
-        />
-      </div>
-
-      {/* Stat Cards */}
-<div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
-  {statCards.map((card) => (
-    <div
-      key={card.label}
-      className="stat-card-glass"
-    >
-      <div className="text-slate-200 text-xs tracking-wide">{card.label}</div>
-      <div className="text-2xl font-bold neon-glow">{card.value}</div>
-    </div>
-  ))}
-</div>
-
-
-      {/* Charts */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-        <div className="bg-white/10 border-none shadow-xl rounded-2xl p-4 backdrop-blur">
-          <div className="text-slate-300 mb-2">Collection Trend</div>
-          <BarChart width={320} height={180} data={collectionData}>
-            <XAxis dataKey="date" stroke="#888" />
-            <YAxis stroke="#888" />
-            <Tooltip />
-            <Bar dataKey="amount" fill="#00C49F" radius={[8, 8, 0, 0]} />
-          </BarChart>
+    <div className="w-full min-h-screen bg-[#f7faff] py-12" style={{ fontFamily: "Segoe UI, Roboto, Arial, sans-serif" }}>
+      <div className="max-w-6xl mx-auto">
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row items-center justify-between mb-8 gap-4">
+          <div>
+            <div className="text-lg font-semibold text-slate-700">Welcome, User</div>
+            <div className="text-3xl font-bold text-slate-800 mb-1">Real Estate Dashboard</div>
+          </div>
+          <div className="flex gap-2">
+            <label className="text-slate-700 text-sm font-medium flex items-center gap-1">
+              <span>From</span>
+              <input
+                type="date"
+                value={from}
+                onChange={e => setFrom(e.target.value)}
+                className="px-2 py-1 rounded bg-white border border-slate-300 text-slate-800 text-sm"
+                max={to || undefined}
+              />
+            </label>
+            <label className="text-slate-700 text-sm font-medium flex items-center gap-1">
+              <span>To</span>
+              <input
+                type="date"
+                value={to}
+                onChange={e => setTo(e.target.value)}
+                className="px-2 py-1 rounded bg-white border border-slate-300 text-slate-800 text-sm"
+                min={from || undefined}
+              />
+            </label>
+          </div>
         </div>
-        <div className="bg-white/10 border-none shadow-xl rounded-2xl p-4 backdrop-blur">
-          <div className="text-slate-300 mb-2">Payment Status</div>
-          <PieChart width={200} height={180}>
-            <Pie
-              data={paymentStatusData}
-              dataKey="value"
-              nameKey="name"
-              cx="50%"
-              cy="50%"
-              outerRadius={60}
-              label
-            >
-              {paymentStatusData.map((entry, index) => (
-                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-              ))}
-            </Pie>
-            <Tooltip />
-          </PieChart>
-        </div>
-      </div>
 
-      {/* Unpaid Clients Table */}
-      <div className="bg-white/10 border-none shadow-xl rounded-2xl p-4 backdrop-blur">
-        <div className="text-slate-300 mb-2">Unpaid Clients</div>
-        <table className="w-full text-white text-sm rounded-lg overflow-hidden">
-          <thead>
-            <tr className="bg-white/10">
-              <th className="p-2">Name</th>
-              <th>Unit</th>
-              <th>Amount</th>
-              <th>Due Date</th>
-              <th>Status</th>
-              <th>Phone</th>
-            </tr>
-          </thead>
-          <tbody>
-            {unpaidClients.map((c) => (
-              <tr key={c.name} className="hover:bg-white/5 transition">
-                <td className="p-2">{c.name}</td>
-                <td>{c.unit}</td>
-                <td>{c.amount}</td>
-                <td>{c.due}</td>
-                <td className={c.status === "Overdue" ? "text-red-400 font-bold" : "text-yellow-300"}>
-                  {c.status}
-                </td>
-                <td>{c.phone}</td>
-              </tr>
+        {/* Current Month Cards */}
+        <div className="mb-12">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-6">
+            {monthCards.map(card => (
+              <div
+                key={card.label}
+                className={`bg-white rounded-xl shadow-md px-6 py-5 flex flex-col items-start min-w-[120px] max-w-[210px] border border-slate-100 transition 
+                  ${card.highlight ? "border-orange-400" : ""}
+                `}
+                style={{ cursor: "pointer" }}
+                onClick={() => handleCardClick(card.type)}
+                title="Click for detail"
+              >
+                <span className="text-xs text-blue-600 mb-2 font-semibold">{card.label}</span>
+                <span className={`text-2xl font-extrabold ${card.highlight ? "text-orange-500" : "text-slate-900"}`}>
+                  {card.value}
+                </span>
+              </div>
             ))}
-          </tbody>
-        </table>
+          </div>
+        </div>
+
+        {/* Stat Cards for Date Range */}
+        {!isValid ? (
+          <div className="bg-white rounded-xl text-slate-400 py-16 text-center text-lg font-semibold shadow mb-10">
+            Please select a valid date range to view the dashboard.
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-6 mb-12">
+            {statCards.map(card => (
+              <div
+                key={card.label}
+                className={`bg-white rounded-xl shadow-md px-6 py-5 flex flex-col items-start min-w-[120px] max-w-[210px] border border-slate-100 transition 
+                  ${card.highlight ? "border-orange-400" : ""}
+                `}
+                style={{ cursor: "pointer" }}
+                onClick={() => handleCardClick(card.type)}
+                title="Click for detail"
+              >
+                <span className="text-xs text-slate-600 mb-2 font-semibold">{card.label}</span>
+                <span className={`text-2xl font-extrabold ${card.highlight ? "text-orange-500" : "text-slate-900"}`}>
+                  {card.value}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {/* Detail Modal */}
+        {detailModal.open && (
+          <div className="fixed inset-0 z-50 bg-black/40 flex justify-center items-center">
+            <div className="bg-white rounded-xl p-6 max-w-4xl w-full shadow-lg overflow-auto" style={{ maxHeight: "90vh" }}>
+              <div className="flex justify-between items-center mb-3">
+                <h2 className="text-xl font-bold text-slate-800">{detailModal.title}</h2>
+                <button
+                  className="text-lg px-2 py-1 bg-slate-200 rounded hover:bg-slate-300"
+                  onClick={() => setDetailModal({
+                    open: false, title: "", records: [], type: "",
+                    contractMap: {}, clientNames: {}, propertyNames: {}, unitNames: {}
+                  })}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-slate-800 border-b">
+                      <th>Client</th>
+                      <th>Property</th>
+                      <th>Unit</th>
+                      <th>Amount Due</th>
+                      <th>Amount Paid</th>
+                      <th>Due Date</th>
+                      <th>Status</th>
+                      <th>Note</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {detailModal.records.map(rec => {
+                      let client = "-", property = "-", unit = "-";
+                      if (detailModal.type.startsWith("lease")) {
+                        property = detailModal.propertyNames?.[rec.property_id] || "-";
+                      } else if (detailModal.type.startsWith("rent")) {
+                        const ctr = detailModal.contractMap?.[rec.contract_id];
+                        client = detailModal.clientNames?.[ctr?.client_id] || "-";
+                        property = detailModal.propertyNames?.[ctr?.property_id] || "-";
+                        unit = detailModal.unitNames?.[ctr?.unit_id] || "-";
+                      }
+                      return (
+                        <tr key={rec.id} className="border-b hover:bg-slate-50">
+                          <td>{client}</td>
+                          <td>{property}</td>
+                          <td>{unit}</td>
+                          <td>{rec.amount_due}</td>
+                          <td>{rec.amount_paid}</td>
+                          <td>{rec.due_date}</td>
+                          <td>{rec.status}</td>
+                          <td>{rec.payment_note || ""}</td>
+                        </tr>
+                      );
+                    })}
+                    {detailModal.records.length === 0 && (
+                      <tr>
+                        <td colSpan={8} className="text-center text-slate-400 py-4">No records found.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
       </div>
     </div>
   );
